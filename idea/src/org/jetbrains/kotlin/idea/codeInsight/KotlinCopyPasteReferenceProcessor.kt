@@ -79,6 +79,8 @@ import org.jetbrains.kotlin.utils.addToStdlib.firstIsInstanceOrNull
 import java.awt.datatransfer.Transferable
 import java.awt.datatransfer.UnsupportedFlavorException
 import java.io.IOException
+import java.lang.Math.max
+import java.lang.Math.min
 import java.util.*
 
 class KotlinCopyPasteReferenceProcessor : CopyPastePostProcessor<BasicKotlinReferenceTransferableData>() {
@@ -117,6 +119,11 @@ class KotlinCopyPasteReferenceProcessor : CopyPastePostProcessor<BasicKotlinRefe
         val text = file.text.substring(offsetDelta)
         val ranges = startOffsets.indices.map { TextRange(startOffsets[it], endOffsets[it]) }
 
+        val locationFqName = if (startOffsets.size == 1) {
+            val fqName = file.namedDeclarationFqName(max(startOffsets[0] - 1, 0))
+            fqName?.takeIf { it == file.namedDeclarationFqName(min(endOffsets[0] + 1, file.textLength)) }
+        } else null
+
         return listOf(
             BasicKotlinReferenceTransferableData(
                 sourceFileUrl = file.virtualFile.url,
@@ -124,10 +131,14 @@ class KotlinCopyPasteReferenceProcessor : CopyPastePostProcessor<BasicKotlinRefe
                 imports = imports,
                 sourceTextOffset = offsetDelta,
                 sourceText = text,
-                textRanges = ranges
+                textRanges = ranges,
+                locationFqName = locationFqName
             )
         )
     }
+
+    private fun KtFile.namedDeclarationFqName(offset: Int): String? =
+        PsiTreeUtil.getNonStrictParentOfType(this.findElementAt(offset), KtNamedDeclaration::class.java)?.fqName?.asString()
 
     private fun collectReferenceData(
         textRanges: List<TextRange>,
@@ -266,6 +277,18 @@ class KotlinCopyPasteReferenceProcessor : CopyPastePostProcessor<BasicKotlinRefe
         val document = editor.document
         val file = PsiDocumentManager.getInstance(project).getPsiFile(document)
         if (file !is KtFile) return
+
+        if (values.size == 1 && values[0].sourceFileUrl == file.virtualFile.url &&
+            values[0].locationFqName != null &&
+            // check locationFqName on position before pasted snipplet
+            values[0].locationFqName == file.namedDeclarationFqName(max(caretOffset - 1, 0))
+        ) {
+            val currentImports = file.importDirectives.map { it.text }.toSet()
+            val originalImports = values.flatMap { it.imports }.toSet()
+            if (currentImports == originalImports) {
+                return
+            }
+        }
 
         processReferenceData(project, editor, file, bounds.startOffset, values.single())
     }
